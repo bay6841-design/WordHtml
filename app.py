@@ -69,28 +69,53 @@ def paragraph_to_html(paragraph: ET.Element) -> str:
     return f"<{tag}>{body}</{tag}>"
 
 
+def blocks_to_html(parent: ET.Element) -> list[str]:
+    blocks: list[str] = []
+
+    for element in parent:
+        if element.tag == f"{{{W_NS}}}p":
+            p_html = paragraph_to_html(element)
+            if p_html:
+                blocks.append(p_html)
+        elif element.tag == f"{{{W_NS}}}tbl":
+            table_html = table_to_html(element)
+            if table_html:
+                blocks.append(table_html)
+        elif element.tag in (
+            f"{{{W_NS}}}sdt",
+            f"{{{W_NS}}}sdtContent",
+            f"{{{W_NS}}}customXml",
+        ):
+            blocks.extend(blocks_to_html(element))
+        elif list(element):
+            # Резервный путь для контейнеров Word (например, smartTag):
+            # спускаемся глубже и собираем известные блоки.
+            blocks.extend(blocks_to_html(element))
+
+    return blocks
+
+
 def table_to_html(table: ET.Element) -> str:
     rows_html: list[str] = []
 
     for row in table.findall("w:tr", NS):
         cells_html: list[str] = []
+
         for cell in row.findall("w:tc", NS):
-            cell_parts: list[str] = []
-            for paragraph in cell.findall("w:p", NS):
-                p_html = paragraph_to_html(paragraph)
-                if p_html:
-                    cell_parts.append(p_html)
-
-            for nested_table in cell.findall("w:tbl", NS):
-                nested_html = table_to_html(nested_table)
-                if nested_html:
-                    cell_parts.append(nested_html)
-
-            cell_body = "".join(cell_parts) if cell_parts else "<p></p>"
+            cell_parts = blocks_to_html(cell)
+            cell_body = "".join(cell_parts).strip()
+            if not cell_body:
+                cell_body = "&nbsp;"
             cells_html.append(f"<td>{cell_body}</td>")
 
-        if cells_html:
-            rows_html.append(f"<tr>{''.join(cells_html)}</tr>")
+        if not cells_html:
+            continue
+
+        # Отфильтровываем полностью пустые строки, которые часто встречаются в служебной верстке Word.
+        if all(cell == "<td>&nbsp;</td>" for cell in cells_html):
+            continue
+
+        rows_html.append(f"<tr>{''.join(cells_html)}</tr>")
 
     if not rows_html:
         return ""
@@ -113,17 +138,7 @@ def docx_to_html(docx_bytes: bytes) -> str:
     if body is None:
         raise ValueError("В документе отсутствует содержимое.")
 
-    html_blocks: list[str] = []
-    for element in body:
-        if element.tag == f"{{{W_NS}}}p":
-            p_html = paragraph_to_html(element)
-            if p_html:
-                html_blocks.append(p_html)
-        elif element.tag == f"{{{W_NS}}}tbl":
-            table_html = table_to_html(element)
-            if table_html:
-                html_blocks.append(table_html)
-
+    html_blocks = blocks_to_html(body)
     converted = "\n".join(html_blocks)
     return (
         "<!doctype html>\n"
